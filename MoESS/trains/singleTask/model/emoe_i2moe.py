@@ -3,28 +3,25 @@ import torch.nn as nn
 
 from src.imoe.InteractionMoE import InteractionMoE
 
-from .emoe import EMOE
+from .emoe import DataExpert
 
 
 class EMOEExpertWrapper(nn.Module):
-    """Wrap EMOE and expose a specific expert output for I2MOE."""
+    """Wrap EMOE data-expert architecture for I2MOE."""
 
     def __init__(self, args, mode: str):
         super().__init__()
-        self.emoe = EMOE(args)
+        self.expert = DataExpert(args)
         self.mode = mode
 
     def forward(self, inputs):
         eeg, eog = inputs
-        output = self.emoe(eeg, eog)
         if self.mode == "eeg":
-            return output["logits_eeg"]
+            return self.expert(eeg, eeg)
         if self.mode == "eog":
-            return output["logits_eog"]
-        if self.mode == "data":
-            return output["logits_data"]
-        if self.mode == "fusion":
-            return output["logits_c"]
+            return self.expert(eog, eog)
+        if self.mode in {"synergy", "redundancy"}:
+            return self.expert(eeg, eog)
         raise ValueError(f"Unknown EMOE expert mode: {self.mode}")
 
 
@@ -38,7 +35,7 @@ class EMOEI2MOE(nn.Module):
         num_layer_rw = int(getattr(args, "i2moe_num_layer_rw", 2))
         temperature_rw = float(getattr(args, "i2moe_temperature_rw", 1.0))
 
-        expert_modes = ["eeg", "eog", "data", "fusion"]
+        expert_modes = ["eeg", "eog", "synergy", "redundancy"]
         fusion_models = [EMOEExpertWrapper(args, mode) for mode in expert_modes]
         self.ensemble = InteractionMoE(
             num_modalities=2,
