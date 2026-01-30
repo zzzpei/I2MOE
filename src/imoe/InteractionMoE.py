@@ -136,6 +136,7 @@ class InteractionMoE(nn.Module):
         self,
         num_modalities=3,
         fusion_model=None,
+        fusion_models=None,
         fusion_sparse=True,
         hidden_dim=256,
         hidden_dim_rw=256,
@@ -153,12 +154,25 @@ class InteractionMoE(nn.Module):
             num_layers=num_layer_rw,
             temperature=temperature_rw,
         )
-        self.interaction_experts = nn.ModuleList(
-            [
-                InteractionExpert(deepcopy(fusion_model), fusion_sparse)
-                for _ in range(num_branches)
-            ]
-        )
+        if fusion_models is not None:
+            if len(fusion_models) != num_branches:
+                raise ValueError(
+                    "fusion_models must match num_branches "
+                    f"({len(fusion_models)} != {num_branches})."
+                )
+            self.interaction_experts = nn.ModuleList(
+                [
+                    InteractionExpert(fusion_models[idx], fusion_sparse)
+                    for idx in range(num_branches)
+                ]
+            )
+        else:
+            self.interaction_experts = nn.ModuleList(
+                [
+                    InteractionExpert(deepcopy(fusion_model), fusion_sparse)
+                    for _ in range(num_branches)
+                ]
+            )
         self.fusion_sparse = fusion_sparse
 
     def uniqueness_loss_single(self, anchor, pos, neg):
