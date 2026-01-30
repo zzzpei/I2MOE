@@ -10,7 +10,7 @@ from config import get_config_regression
 from data_loader import Dataloader_Multimodal_Generator
 from trains import ATIO
 from utils import assign_gpu, setup_seed
-from trains.singleTask.model import emoe
+from trains.singleTask.model import emoe, emoe_i2moe
 import sys
 from glob import glob
 import torch.nn as nn
@@ -307,7 +307,11 @@ def _run(args, num_workers=4, is_tune=False, from_sena=False, seed_idx=0):
             args.samples_per_cls = [1 for _ in range(args.num_classes)]
 
         # 创建模型和训练器
-        model = getattr(emoe, 'EMOE')(args).cuda()
+        if args.model_name == "emoe_i2moe":
+            seq_len = dataloader["train"].dataset.get_seq_len()
+            model = emoe_i2moe.EMOEI2MOE(args, seq_len=seq_len).cuda()
+        else:
+            model = getattr(emoe, "EMOE")(args).cuda()
         model = nn.DataParallel(model)
         trainer = ATIO().getTrain(args)
 
@@ -316,7 +320,10 @@ def _run(args, num_workers=4, is_tune=False, from_sena=False, seed_idx=0):
         _ = trainer.do_train(model, dataloader, return_epoch_results=from_sena, fold_id=fold_id)
 
         # 加载最佳模型进行测试
-        model_path = f'pt/emoe_fold{fold_id}.pth'
+        if args.model_name == "emoe_i2moe":
+            model_path = f"pt/emoe_i2moe_fold{fold_id}.pth"
+        else:
+            model_path = f"pt/emoe_fold{fold_id}.pth"
         if os.path.exists(model_path):
             state_dict = torch.load(model_path)
             if isinstance(model, nn.DataParallel):

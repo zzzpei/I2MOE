@@ -9,6 +9,7 @@ class ATIO():
     def __init__(self):
         self.TRAIN_MAP = {
             'emoe': EMOE,
+            'emoe_i2moe': EMOEI2MOE,
         }
     
     def getTrain(self, args):
