@@ -179,48 +179,50 @@ class InteractionMoERegression(nn.Module):
             total_redundancy_loss += mse_loss(anchor, positive)
         return total_redundancy_loss / len(positives)
 
-    def forward(self, inputs):
-        expert_outputs = []
+    def forward(self, inputs, return_expert_outputs=True):
+        expert_outputs = [] if return_expert_outputs else None
+        all_predictions = []
+        interaction_losses = []
 
         if self.fusion_sparse:
             expert_gate_losses = []
 
-            for expert in self.interaction_experts:
+        for expert_idx, expert in enumerate(self.interaction_experts):
+            if self.fusion_sparse:
                 expert_output, expert_gate_loss = expert.forward_multiple(inputs)
-                expert_outputs.append(expert_output)
                 expert_gate_losses.append(expert_gate_loss)
-        else:
-            for expert in self.interaction_experts:
-                expert_outputs.append(expert.forward_multiple(inputs))
+            else:
+                expert_output = expert.forward_multiple(inputs)
 
-        ###### Define interaction losses ######
-        # First n experts are uniqueness interaction experts
-        uniqueness_losses = []
-        for i in range(self.num_modalities):
-            uniqueness_loss = 0
-            outputs = expert_outputs[i]
-            anchor = outputs[0]
-            neg = outputs[i + 1]
-            positives = outputs[1 : i + 1] + outputs[i + 2 :]
-            for pos in positives:
-                uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
-            uniqueness_losses.append(uniqueness_loss / len(positives))
+            if return_expert_outputs:
+                expert_outputs.append(expert_output)
 
-        # One Synergy Expert
-        synergy_output = expert_outputs[-2]
-        synergy_anchor = synergy_output[0]
-        synergy_negatives = torch.stack(synergy_output[1:])
-        synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
+            all_predictions.append(expert_output[0])
 
-        # One Redundancy Expert
-        redundancy_output = expert_outputs[-1]
-        redundancy_anchor = redundancy_output[0]
-        redundancy_positives = torch.stack(redundancy_output[1:])
-        redundancy_loss = self.redundancy_loss(redundancy_anchor, redundancy_positives)
+            if expert_idx < self.num_modalities:
+                uniqueness_loss = 0
+                anchor = expert_output[0]
+                neg = expert_output[expert_idx + 1]
+                positives = expert_output[1 : expert_idx + 1] + expert_output[
+                    expert_idx + 2 :
+                ]
+                for pos in positives:
+                    uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
+                interaction_losses.append(uniqueness_loss / len(positives))
+            elif expert_idx == len(self.interaction_experts) - 2:
+                synergy_anchor = expert_output[0]
+                synergy_negatives = torch.stack(expert_output[1:])
+                interaction_losses.append(
+                    self.synergy_loss(synergy_anchor, synergy_negatives)
+                )
+            else:
+                redundancy_anchor = expert_output[0]
+                redundancy_positives = torch.stack(expert_output[1:])
+                interaction_losses.append(
+                    self.redundancy_loss(redundancy_anchor, redundancy_positives)
+                )
 
-        interaction_losses = uniqueness_losses + [synergy_loss] + [redundancy_loss]
-
-        all_predictions = torch.stack([output[0] for output in expert_outputs], dim=1)
+        all_predictions = torch.stack(all_predictions, dim=1)
 
         ###### MLP reweighting the experts' outputs ######
         interaction_weights = self.reweight(inputs)  # Get interaction weights
