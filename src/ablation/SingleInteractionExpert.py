@@ -78,17 +78,27 @@ class SingleInterctionExpert(nn.Module):
         if self.type_of_interaction == "syn":
             synergy_output = expert_outputs[0]
             synergy_anchor = synergy_output[0]
-            synergy_negatives = torch.stack(synergy_output[1:])
-            synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
+            if len(synergy_output) <= 1:
+                synergy_loss = torch.zeros(
+                    (), device=synergy_anchor.device, dtype=synergy_anchor.dtype
+                )
+            else:
+                synergy_negatives = torch.stack(synergy_output[1:])
+                synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
             interaction_loss = synergy_loss
 
         elif self.type_of_interaction == "red":
             redundancy_output = expert_outputs[0]
             redundancy_anchor = redundancy_output[0]
-            redundancy_positives = torch.stack(redundancy_output[1:])
-            redundancy_loss = self.redundancy_loss(
-                redundancy_anchor, redundancy_positives
-            )
+            if len(redundancy_output) <= 1:
+                redundancy_loss = torch.zeros(
+                    (), device=redundancy_anchor.device, dtype=redundancy_anchor.dtype
+                )
+            else:
+                redundancy_positives = torch.stack(redundancy_output[1:])
+                redundancy_loss = self.redundancy_loss(
+                    redundancy_anchor, redundancy_positives
+                )
             interaction_loss = redundancy_loss
 
         else:
@@ -96,11 +106,16 @@ class SingleInterctionExpert(nn.Module):
             uniqueness_loss = 0
             outputs = expert_outputs[0]
             anchor = outputs[0]
-            neg = outputs[modality_idx + 1]
-            positives = outputs[1 : modality_idx + 1] + outputs[modality_idx + 2 :]
-            for pos in positives:
-                uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
-            interaction_loss = uniqueness_loss
+            if len(outputs) <= 1:
+                interaction_loss = torch.zeros(
+                    (), device=anchor.device, dtype=anchor.dtype
+                )
+            else:
+                neg = outputs[modality_idx + 1]
+                positives = outputs[1 : modality_idx + 1] + outputs[modality_idx + 2 :]
+                for pos in positives:
+                    uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
+                interaction_loss = uniqueness_loss
 
         logits = expert_output[0]
 

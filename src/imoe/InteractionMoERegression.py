@@ -97,38 +97,30 @@ class InteractionExpert(nn.Module):
 
     def forward_multiple(self, inputs):
         """
-        Perform (1 + n) forward passes: one with all modalities and one for each modality replaced.
+        Perform a single forward pass with all modalities present.
 
         Args:
             inputs (list of tensors): List of modality inputs.
 
         Returns:
-            List of outputs from the forward passes.
+            List containing the output from the single forward pass.
         """
-        outputs = []
         if self.fusion_sparse:
-            gate_losses = []
-
             output, gate_loss = self.forward(inputs)
-            outputs.append(output)
-            gate_losses.append(gate_loss)
+            return [output], [gate_loss]
 
-            for i in range(len(inputs)):
-                output, gate_loss = self.forward_with_replacement(
-                    inputs, replace_index=i
-                )
-                outputs.append(output)
-                gate_losses.append(gate_loss)
+        return [self.forward(inputs)]
 
-            return outputs, gate_losses
-        else:
-            outputs.append(self.forward(inputs))
 
-        # Forward passes with each modality replaced
-        for i in range(len(inputs)):
-            outputs.append(self.forward_with_replacement(inputs, replace_index=i))
+class OutputHead(nn.Module):
+    def __init__(self):
+        super(OutputHead, self).__init__()
+        self.proj = None
 
-        return outputs
+    def forward(self, x, output_dim):
+        if self.proj is None:
+            self.proj = nn.Linear(x.size(-1), output_dim).to(x.device)
+        return self.proj(x)
 
 
 class InteractionMoERegression(nn.Module):
@@ -141,10 +133,13 @@ class InteractionMoERegression(nn.Module):
         hidden_dim_rw=256,
         num_layer_rw=2,
         temperature_rw=1,
+        shared_forward=True,
     ):
         super(InteractionMoERegression, self).__init__()
         num_branches = num_modalities + 1 + 1  # uni + syn + red
         self.num_modalities = num_modalities
+        self.num_branches = num_branches
+        self.shared_forward = shared_forward
         self.reweight = MLPReWeighting(
             num_modalities,
             num_branches,
@@ -153,13 +148,27 @@ class InteractionMoERegression(nn.Module):
             num_layers=num_layer_rw,
             temperature=temperature_rw,
         )
-        self.interaction_experts = nn.ModuleList(
-            [
-                InteractionExpert(deepcopy(fusion_model), fusion_sparse)
-                for _ in range(num_branches)
-            ]
-        )
+        if self.shared_forward:
+            self.fusion_model = fusion_model
+            self.output_heads = nn.ModuleList(
+                [OutputHead() for _ in range(num_branches)]
+            )
+        else:
+            self.interaction_experts = nn.ModuleList(
+                [
+                    InteractionExpert(deepcopy(fusion_model), fusion_sparse)
+                    for _ in range(num_branches)
+                ]
+            )
         self.fusion_sparse = fusion_sparse
+
+    def _forward_shared(self, inputs):
+        try:
+            output, latent = self.fusion_model(inputs, return_latent=True)
+        except TypeError:
+            output = self.fusion_model(inputs)
+            latent = output
+        return output, latent
 
     def uniqueness_loss_single(self, anchor, pos, neg):
         mse_loss = nn.MSELoss()
@@ -180,49 +189,80 @@ class InteractionMoERegression(nn.Module):
         return total_redundancy_loss / len(positives)
 
     def forward(self, inputs, return_expert_outputs=True):
-        expert_outputs = [] if return_expert_outputs else None
-        all_predictions = []
-        interaction_losses = []
+        if self.shared_forward:
+            base_output, latent = self._forward_shared(inputs)
+            head_outputs = []
+            expert_outputs = [] if return_expert_outputs else None
+            for head in self.output_heads:
+                head_output = head(latent, base_output.size(-1))
+                head_outputs.append(head_output)
+                if return_expert_outputs:
+                    expert_outputs.append([head_output])
 
-        if self.fusion_sparse:
-            expert_gate_losses = []
-
-        for expert_idx, expert in enumerate(self.interaction_experts):
+            all_predictions = torch.stack(head_outputs, dim=1)
+            interaction_losses = [
+                torch.zeros(
+                    (), device=base_output.device, dtype=base_output.dtype
+                )
+                for _ in range(self.num_branches)
+            ]
             if self.fusion_sparse:
-                expert_output, expert_gate_loss = expert.forward_multiple(inputs)
-                expert_gate_losses.append(expert_gate_loss)
-            else:
-                expert_output = expert.forward_multiple(inputs)
+                gate_loss = self.fusion_model.gate_loss()
+                expert_gate_losses = [gate_loss for _ in range(self.num_branches)]
+        else:
+            expert_outputs = [] if return_expert_outputs else None
+            all_predictions = []
+            interaction_losses = []
 
-            if return_expert_outputs:
-                expert_outputs.append(expert_output)
+            if self.fusion_sparse:
+                expert_gate_losses = []
 
-            all_predictions.append(expert_output[0])
+            for expert_idx, expert in enumerate(self.interaction_experts):
+                if self.fusion_sparse:
+                    expert_output, expert_gate_loss = expert.forward_multiple(inputs)
+                    expert_gate_losses.append(expert_gate_loss)
+                else:
+                    expert_output = expert.forward_multiple(inputs)
 
-            if expert_idx < self.num_modalities:
-                uniqueness_loss = 0
-                anchor = expert_output[0]
-                neg = expert_output[expert_idx + 1]
-                positives = expert_output[1 : expert_idx + 1] + expert_output[
-                    expert_idx + 2 :
-                ]
-                for pos in positives:
-                    uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
-                interaction_losses.append(uniqueness_loss / len(positives))
-            elif expert_idx == len(self.interaction_experts) - 2:
-                synergy_anchor = expert_output[0]
-                synergy_negatives = torch.stack(expert_output[1:])
-                interaction_losses.append(
-                    self.synergy_loss(synergy_anchor, synergy_negatives)
-                )
-            else:
-                redundancy_anchor = expert_output[0]
-                redundancy_positives = torch.stack(expert_output[1:])
-                interaction_losses.append(
-                    self.redundancy_loss(redundancy_anchor, redundancy_positives)
-                )
+                if return_expert_outputs:
+                    expert_outputs.append(expert_output)
 
-        all_predictions = torch.stack(all_predictions, dim=1)
+                all_predictions.append(expert_output[0])
+
+                if len(expert_output) <= 1:
+                    interaction_losses.append(
+                        torch.zeros(
+                            (),
+                            device=expert_output[0].device,
+                            dtype=expert_output[0].dtype,
+                        )
+                    )
+                    continue
+
+                if expert_idx < self.num_modalities:
+                    uniqueness_loss = 0
+                    anchor = expert_output[0]
+                    neg = expert_output[expert_idx + 1]
+                    positives = expert_output[1 : expert_idx + 1] + expert_output[
+                        expert_idx + 2 :
+                    ]
+                    for pos in positives:
+                        uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
+                    interaction_losses.append(uniqueness_loss / len(positives))
+                elif expert_idx == len(self.interaction_experts) - 2:
+                    synergy_anchor = expert_output[0]
+                    synergy_negatives = torch.stack(expert_output[1:])
+                    interaction_losses.append(
+                        self.synergy_loss(synergy_anchor, synergy_negatives)
+                    )
+                else:
+                    redundancy_anchor = expert_output[0]
+                    redundancy_positives = torch.stack(expert_output[1:])
+                    interaction_losses.append(
+                        self.redundancy_loss(redundancy_anchor, redundancy_positives)
+                    )
+
+            all_predictions = torch.stack(all_predictions, dim=1)
 
         ###### MLP reweighting the experts' outputs ######
         interaction_weights = self.reweight(inputs)  # Get interaction weights
@@ -246,17 +286,24 @@ class InteractionMoERegression(nn.Module):
         )
 
     def inference(self, inputs):
-        # Get outputs for each interaction type
-        expert_outputs = []
-        if self.fusion_sparse:
-            for expert in self.interaction_experts:
-                expert_output, _ = expert.forward(inputs)
-                expert_outputs.append(expert_output)
+        if self.shared_forward:
+            base_output, latent = self._forward_shared(inputs)
+            expert_outputs = [
+                head(latent, base_output.size(-1)) for head in self.output_heads
+            ]
+            all_predictions = torch.stack(expert_outputs, dim=1)
         else:
-            for expert in self.interaction_experts:
-                expert_outputs.append(expert.forward(inputs))
+            # Get outputs for each interaction type
+            expert_outputs = []
+            if self.fusion_sparse:
+                for expert in self.interaction_experts:
+                    expert_output, _ = expert.forward(inputs)
+                    expert_outputs.append(expert_output)
+            else:
+                for expert in self.interaction_experts:
+                    expert_outputs.append(expert.forward(inputs))
 
-        all_predictions = torch.stack(expert_outputs, dim=1)
+            all_predictions = torch.stack(expert_outputs, dim=1)
 
         interaction_weights = self.reweight(inputs)  # Get interaction weights
         weights_transposed = interaction_weights.unsqueeze(2)

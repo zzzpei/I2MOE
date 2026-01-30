@@ -56,45 +56,20 @@ class LatentContrastiveInteractionExpert(nn.Module):
 
     def forward_multiple(self, inputs):
         """
-        Perform (1 + n) forward passes: one with all modalities and one for each modality replaced.
+        Perform a single forward pass with all modalities present.
 
         Args:
             inputs (list of tensors): List of modality inputs.
 
         Returns:
-            List of outputs from the forward passes.
+            Lists containing the outputs from the single forward pass.
         """
-        outputs = []
-        latents = []
         if self.fusion_sparse:
-            gate_losses = []
-
             output, latent, gate_loss = self.forward(inputs)
-            outputs.append(output)
-            latents.append(latent)
-            gate_losses.append(gate_loss)
+            return [output], [latent], [gate_loss]
 
-            for i in range(len(inputs)):
-                output, latent, gate_loss = self.forward_with_replacement(
-                    inputs, replace_index=i
-                )
-                outputs.append(output)
-                latents.append(latent)
-                gate_losses.append(gate_loss)
-
-            return outputs, latents, gate_losses
-        else:
-            output, latent = self.forward(inputs)
-            outputs.append(output)
-            latents.append(latent)
-
-        # Forward passes with each modality replaced
-        for i in range(len(inputs)):
-            output, latent = self.forward_with_replacement(inputs, replace_index=i)
-            outputs.append(output)
-            latents.append(latent)
-
-        return outputs, latents
+        output, latent = self.forward(inputs)
+        return [output], [latent]
 
 
 class LatentContrastiveInteractionMoE(nn.Module):
@@ -183,6 +158,11 @@ class LatentContrastiveInteractionMoE(nn.Module):
             uniqueness_loss = 0
             outputs = latent_outputs[i]
             anchor = outputs[0]
+            if len(outputs) <= 1:
+                uniqueness_losses.append(
+                    torch.zeros((), device=anchor.device, dtype=anchor.dtype)
+                )
+                continue
             neg = outputs[i + 1]
             positives = outputs[1 : i + 1] + outputs[i + 2 :]
             for pos in positives:
@@ -192,14 +172,26 @@ class LatentContrastiveInteractionMoE(nn.Module):
         # One Synergy Expert
         synergy_output = latent_outputs[-2]
         synergy_anchor = synergy_output[0]
-        synergy_negatives = torch.stack(synergy_output[1:])
-        synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
+        if len(synergy_output) <= 1:
+            synergy_loss = torch.zeros(
+                (), device=synergy_anchor.device, dtype=synergy_anchor.dtype
+            )
+        else:
+            synergy_negatives = torch.stack(synergy_output[1:])
+            synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
 
         # One Redundacy Expert
         redundancy_output = latent_outputs[-1]
         redundancy_anchor = redundancy_output[0]
-        redundancy_positives = torch.stack(redundancy_output[1:])
-        redundancy_loss = self.redundancy_loss(redundancy_anchor, redundancy_positives)
+        if len(redundancy_output) <= 1:
+            redundancy_loss = torch.zeros(
+                (), device=redundancy_anchor.device, dtype=redundancy_anchor.dtype
+            )
+        else:
+            redundancy_positives = torch.stack(redundancy_output[1:])
+            redundancy_loss = self.redundancy_loss(
+                redundancy_anchor, redundancy_positives
+            )
 
         interaction_losses = uniqueness_losses + [synergy_loss] + [redundancy_loss]
 
