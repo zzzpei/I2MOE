@@ -9,7 +9,11 @@ from src.common.datasets.adni import load_and_preprocess_data_adni
 from src.common.datasets.mimic import load_and_preprocess_data_mimic
 from src.common.datasets.enrico import load_and_preprocess_data_enrico
 from src.common.datasets.mmimdb import load_and_preprocess_data_mmimdb
-from src.common.datasets.mosi import load_and_preprocess_data_mosi
+from src.common.datasets.mosi import (
+    load_and_preprocess_data_mosi,
+    load_and_preprocess_data_humor,
+    load_and_preprocess_data_sarcasm,
+)
 from src.common.datasets.MultiModalDataset import create_loaders
 
 from src.common.utils import (
@@ -274,7 +278,7 @@ def train_and_evaluate_synergy_redundancy_only(args, seed, fusion_model, fusion)
 
             interaction_loss = sum(interaction_losses) / (len(args.modality) + 2)
             if args.fusion_sparse:
-                gate_loss = torch.mean(torch.tensor(gate_losses))
+                gate_loss = torch.stack(gate_losses).mean()
                 loss = (
                     task_loss
                     + args.interaction_loss_weight * interaction_loss
