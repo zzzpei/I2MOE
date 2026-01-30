@@ -23,6 +23,8 @@ from src.common.datasets.mmimdb import load_and_preprocess_data_mmimdb
 from src.common.datasets.mosi import (
     load_and_preprocess_data_mosi,
     load_and_preprocess_data_mosi_regression,
+    load_and_preprocess_data_humor,
+    load_and_preprocess_data_sarcasm,
 )
 from src.common.datasets.MultiModalDataset import create_loaders
 from src.common.fusion_models.transformer import Transformer
