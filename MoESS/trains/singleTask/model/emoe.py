@@ -366,6 +366,88 @@ class CrossGatedFusion(nn.Module):
         return self.fuse(fused)
 
 
+class DataExpert(nn.Module):
+    """Data expert branch used by I2MOE (matches EMOE data expert architecture)."""
+
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+
+        fs = getattr(args, "sampling_rate", 100)
+        gn_groups = getattr(args, "gn_groups", 8)
+
+        self.data_gabor = GaborConv1d(
+            in_channels=2,
+            out_channels=64,
+            kernel_size=101,
+            stride=2,
+            padding=101 // 2,
+            sampling_rate=fs,
+            freq_range=(0.5, 35),
+            learnable_phase=False,
+            groups=2,
+        )
+
+        self.data_gabor_adjust = nn.Sequential(
+            nn.Conv1d(64, 64, kernel_size=3, stride=1, padding=1, bias=False, groups=2),
+            nn.GroupNorm(_pick_gn_groups(64, gn_groups), 64),
+            nn.ReLU(inplace=True),
+        )
+
+        self.use_specaug = bool(getattr(args, "use_specaug", True))
+        self.specaug = FeatureSpecAugment1D(
+            p=float(getattr(args, "specaug_p", 0.5)),
+            time_mask_num=int(getattr(args, "specaug_time_num", 2)),
+            time_mask_max=int(getattr(args, "specaug_time_max", 80)),
+            channel_mask_num=int(getattr(args, "specaug_ch_num", 1)),
+            channel_mask_max=int(getattr(args, "specaug_ch_max", 8)),
+            replace_with_zero=True,
+        )
+
+        self.data_stream_eeg = nn.Sequential(
+            ResidualBlock(32, 64, kernel_size=11, stride=2, padding=5, gn_groups=gn_groups),
+            MultiScaleAttention(64),
+        )
+        self.data_stream_eog = nn.Sequential(
+            ResidualBlock(32, 64, kernel_size=11, stride=2, padding=5, gn_groups=gn_groups),
+            MultiScaleAttention(64),
+        )
+        self.data_fusion = CrossGatedFusion(64, gn_groups=gn_groups)
+        self.data_tail = nn.Sequential(
+            ResidualBlock(256, 256, kernel_size=9, stride=2, padding=4, gn_groups=gn_groups),
+            MultiScaleAttention(256),
+            DilatedTemporalBlock(256, dilations=(1, 2, 4), dropout=0.1, gn_groups=gn_groups),
+        )
+
+        self.global_pool = AvgMaxPool1D(256, dropout=0.1)
+
+        self.data_classifier = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, args.num_classes),
+        )
+
+    def forward(self, eeg, eog):
+        data_input = torch.cat([eeg, eog], dim=1)
+        data_gabor_features = self.data_gabor(data_input)
+        data_features = self.data_gabor_adjust(data_gabor_features)
+
+        if self.use_specaug and self.training:
+            data_features = self.specaug(data_features)
+
+        data_eeg, data_eog = torch.split(data_features, 32, dim=1)
+        data_eeg = self.data_stream_eeg(data_eeg)
+        data_eog = self.data_stream_eog(data_eog)
+        data_fused = self.data_fusion(data_eeg, data_eog)
+        data_features = self.data_tail(data_fused)
+
+        data_pooled = self.global_pool(data_features)
+        logits_data = self.data_classifier(data_pooled)
+        return logits_data
+
+
 class EMOE(nn.Module):
     def __init__(self, args):
         super().__init__()
