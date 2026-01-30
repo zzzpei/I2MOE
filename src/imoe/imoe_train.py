@@ -292,10 +292,12 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
 
             if args.fusion_sparse:
                 _, _, outputs, interaction_losses, gate_losses = ensemble_model(
-                    fusion_input
+                    fusion_input, return_expert_outputs=False
                 )
             else:
-                _, _, outputs, interaction_losses = ensemble_model(fusion_input)
+                _, _, outputs, interaction_losses = ensemble_model(
+                    fusion_input, return_expert_outputs=False
+                )
 
             if args.data == "mosi_regression":
                 task_loss = criterion(outputs, batch_labels.unsqueeze(1))
