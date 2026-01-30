@@ -1,0 +1,22 @@
+{
+  "train_acc_mean": 0.9156850000000001,
+  "train_acc_std": 0.034078767506129704,
+  "val_acc_mean": 0.85908,
+  "val_acc_std": 0.03913550817352447,
+  "test_acc_mean": 0.839325,
+  "test_acc_std": 0.05002186758650765,
+  "test_f1_weighted_mean": 0.8372399999999999,
+  "test_f1_weighted_std": 0.05165185480951442,
+  "test_f1_macro_mean": 0.75716,
+  "test_f1_macro_std": 0.06078921649524086,
+  "test_F1_Wake_mean": 0.89519,
+  "test_F1_Wake_std": 0.06185166380777056,
+  "test_F1_N1_mean": 0.38359999999999994,
+  "test_F1_N1_std": 0.109620085558691,
+  "test_F1_N2_mean": 0.8735149999999999,
+  "test_F1_N2_std": 0.05058951706472502,
+  "test_F1_N3_mean": 0.8308500000000001,
+  "test_F1_N3_std": 0.13207147387125773,
+  "test_F1_REM_mean": 0.802645,
+  "test_F1_REM_std": 0.06783838747928399
+}
