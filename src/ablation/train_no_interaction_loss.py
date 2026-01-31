@@ -9,11 +9,7 @@ from src.common.datasets.adni import load_and_preprocess_data_adni
 from src.common.datasets.mimic import load_and_preprocess_data_mimic
 from src.common.datasets.enrico import load_and_preprocess_data_enrico
 from src.common.datasets.mmimdb import load_and_preprocess_data_mmimdb
-from src.common.datasets.mosi import (
-    load_and_preprocess_data_mosi,
-    load_and_preprocess_data_humor,
-    load_and_preprocess_data_sarcasm,
-)
+from src.common.datasets.mosi import load_and_preprocess_data_mosi
 from src.common.datasets.MultiModalDataset import create_loaders
 
 from src.common.utils import (
@@ -287,7 +283,7 @@ def train_and_evaluate_no_interaction_loss(args, seed, fusion_model, fusion):
                 task_loss = criterion(outputs, batch_labels)
 
             if args.fusion_sparse:
-                gate_loss = torch.stack(gate_losses).mean()
+                gate_loss = torch.mean(torch.tensor(gate_losses))
                 loss = task_loss + args.gate_loss_weight * gate_loss
             else:
                 loss = task_loss
