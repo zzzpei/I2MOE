@@ -48,9 +48,13 @@ def parse_args():
     parser.add_argument("--train_epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--use_amp", type=str2bool, default=True)
     parser.add_argument(
         "--temperature_rw", type=float, default=1
     )  # Temperature of the reweighting model
+    parser.add_argument(
+        "--i2moe_hidden_dim", type=int, default=64
+    )  # Hidden dim fed into reweight MLP
     parser.add_argument(
         "--hidden_dim_rw", type=int, default=256
     )  # Hidden dimension of the reweighting model
@@ -58,6 +62,9 @@ def parse_args():
         "--num_layer_rw", type=int, default=1
     )  # Number of layers of the reweighting model
     parser.add_argument("--interaction_loss_weight", type=float, default=1e-2)
+    parser.add_argument(
+        "--include_synergy_redundancy", type=str2bool, default=False
+    )  # Include syn/red experts
 
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument(
@@ -105,10 +112,13 @@ def main():
     model_kwargs = {
         "model": "Interaction-MoE-Transformer",
         "lr": args.lr,
+        "use_amp": args.use_amp,
         "temperature_rw": args.temperature_rw,
+        "i2moe_hidden_dim": args.i2moe_hidden_dim,
         "hidden_dim_rw": args.hidden_dim_rw,
         "num_layer_rw": args.num_layer_rw,
         "interaction_loss_weight": args.interaction_loss_weight,
+        "include_synergy_redundancy": args.include_synergy_redundancy,
         "modality": args.modality,
         "data": args.data,
         "gate_loss_weight": args.gate_loss_weight,
