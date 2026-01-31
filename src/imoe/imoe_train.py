@@ -15,8 +15,6 @@ from src.common.datasets.mmimdb import load_and_preprocess_data_mmimdb
 from src.common.datasets.mosi import (
     load_and_preprocess_data_mosi,
     load_and_preprocess_data_mosi_regression,
-    load_and_preprocess_data_humor,
-    load_and_preprocess_data_sarcasm,
 )
 from src.common.datasets.MultiModalDataset import create_loaders
 
@@ -308,7 +306,7 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
 
             interaction_loss = sum(interaction_losses) / (len(args.modality) + 2)
             if args.fusion_sparse:
-                gate_loss = torch.stack(gate_losses).mean()
+                gate_loss = torch.mean(torch.tensor(gate_losses))
                 loss = (
                     task_loss
                     + args.interaction_loss_weight * interaction_loss
@@ -643,11 +641,9 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
     visualize_sample_weights(all_routing_weights, args, framework="imoe", fusion=fusion)
 
     if args.data == "mosi_regression":
-        all_preds = np.array(all_preds)
-        all_labels = np.array(all_labels)
-        all_binary_preds = all_preds > 0
-        all_binary_labels = all_labels > 0
-        test_acc = accuracy_score(all_binary_preds, all_binary_labels)
+        all_binary_preds = np.array(all_preds) > 0
+        all_labels = np.array(all_labels) > 0
+        test_acc = accuracy_score(all_binary_preds, all_labels)
         test_mae = mean_absolute_error(all_preds, all_labels)
 
         now = datetime.now()
