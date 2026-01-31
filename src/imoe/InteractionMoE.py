@@ -95,66 +95,21 @@ class InteractionExpert(nn.Module):
 
         return x
 
-    def _split_output(self, output, num_splits):
-        if torch.is_tensor(output):
-            return list(output.chunk(num_splits, dim=0))
-        if isinstance(output, dict):
-            split_items = {
-                key: self._split_output(value, num_splits) for key, value in output.items()
-            }
-            return [
-                {key: split_items[key][idx] for key in split_items}
-                for idx in range(num_splits)
-            ]
-        if isinstance(output, (list, tuple)):
-            split_items = [self._split_output(value, num_splits) for value in output]
-            return [
-                type(output)(split_items[item_idx][split_idx] for item_idx in range(len(split_items)))
-                for split_idx in range(num_splits)
-            ]
-        return [output for _ in range(num_splits)]
-
-    def _stack_variant_inputs(self, variants):
-        stacked_inputs = []
-        for modality_idx in range(len(variants[0])):
-            stacked_inputs.append(
-                torch.cat(
-                    [variant[modality_idx] for variant in variants],
-                    dim=0,
-                )
-            )
-        return stacked_inputs
-
     def forward_multiple(self, inputs):
         """
-        Perform a single forward pass for all modality replacements by stacking
-        inputs along the batch dimension.
+        Perform a single forward pass with all modalities present.
 
         Args:
             inputs (list of tensors): List of modality inputs.
 
         Returns:
-            List containing outputs for the original input plus each modality
-            replacement.
+            List containing the output from the single forward pass.
         """
-        num_modalities = len(inputs)
-        variants = [inputs]
-        for replace_index in range(num_modalities):
-            random_vector = torch.randn_like(inputs[replace_index])
-            variant = (
-                inputs[:replace_index] + [random_vector] + inputs[replace_index + 1 :]
-            )
-            variants.append(variant)
-
-        stacked_inputs = self._stack_variant_inputs(variants)
-        output = self.fusion_model(stacked_inputs)
-        outputs = self._split_output(output, len(variants))
-
         if self.fusion_sparse:
-            gate_loss = self.fusion_model.gate_loss()
-            return outputs, [gate_loss for _ in range(len(outputs))]
+            output, gate_loss = self.forward(inputs)
+            return [output], [gate_loss]
 
-        return outputs
+        return [self.forward(inputs)]
 
 
 class InteractionMoE(nn.Module):
