@@ -97,19 +97,38 @@ class InteractionExpert(nn.Module):
 
     def forward_multiple(self, inputs):
         """
-        Perform a single forward pass with all modalities present.
+        Perform (1 + n) forward passes: one with all modalities and one for each modality replaced.
 
         Args:
             inputs (list of tensors): List of modality inputs.
 
         Returns:
-            List containing the output from the single forward pass.
+            List of outputs from the forward passes.
         """
+        outputs = []
         if self.fusion_sparse:
-            output, gate_loss = self.forward(inputs)
-            return [output], [gate_loss]
+            gate_losses = []
 
-        return [self.forward(inputs)]
+            output, gate_loss = self.forward(inputs)
+            outputs.append(output)
+            gate_losses.append(gate_loss)
+
+            for i in range(len(inputs)):
+                output, gate_loss = self.forward_with_replacement(
+                    inputs, replace_index=i
+                )
+                outputs.append(output)
+                gate_losses.append(gate_loss)
+
+            return outputs, gate_losses
+        else:
+            outputs.append(self.forward(inputs))
+
+        # Forward passes with each modality replaced
+        for i in range(len(inputs)):
+            outputs.append(self.forward_with_replacement(inputs, replace_index=i))
+
+        return outputs
 
 
 class InteractionMoERegression(nn.Module):
@@ -179,16 +198,6 @@ class InteractionMoERegression(nn.Module):
                 expert_outputs.append(expert_output)
 
             all_predictions.append(expert_output[0])
-
-            if len(expert_output) <= 1:
-                interaction_losses.append(
-                    torch.zeros(
-                        (),
-                        device=expert_output[0].device,
-                        dtype=expert_output[0].dtype,
-                    )
-                )
-                continue
 
             if expert_idx < self.num_modalities:
                 uniqueness_loss = 0
