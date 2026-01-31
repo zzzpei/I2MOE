@@ -54,19 +54,38 @@ class MeanVectorInteractionExpert(nn.Module):
 
     def forward_multiple(self, inputs, mean_vectors=None):
         """
-        Perform a single forward pass with all modalities present.
+        Perform (1 + n) forward passes: one with all modalities and one for each modality replaced.
 
         Args:
             inputs (list of tensors): List of modality inputs.
 
         Returns:
-            List containing the output from the single forward pass.
+            List of outputs from the forward passes.
         """
+        outputs = []
         if self.fusion_sparse:
-            output, gate_loss = self.forward(inputs)
-            return [output], [gate_loss]
+            gate_losses = []
 
-        return [self.forward(inputs)]
+            output, gate_loss = self.forward(inputs)
+            outputs.append(output)
+            gate_losses.append(gate_loss)
+
+            for i in range(len(inputs)):
+                output, gate_loss = self.forward_with_replacement(
+                    inputs, replace_index=i, mean_vectors=mean_vectors
+                )
+                outputs.append(output)
+                gate_losses.append(gate_loss)
+
+            return outputs, gate_losses
+        else:
+            outputs.append(self.forward(inputs))
+
+        # Forward passes with each modality replaced
+        for i in range(len(inputs)):
+            outputs.append(self.forward_with_replacement(inputs, replace_index=i, mean_vectors=mean_vectors))
+
+        return outputs
 
 
 class MeanVectorInteractionMoE(nn.Module):
@@ -146,11 +165,6 @@ class MeanVectorInteractionMoE(nn.Module):
             uniqueness_loss = 0
             outputs = expert_outputs[i]
             anchor = outputs[0]
-            if len(outputs) <= 1:
-                uniqueness_losses.append(
-                    torch.zeros((), device=anchor.device, dtype=anchor.dtype)
-                )
-                continue
             neg = outputs[i + 1]
             positives = outputs[1 : i + 1] + outputs[i + 2 :]
             for pos in positives:
@@ -160,26 +174,14 @@ class MeanVectorInteractionMoE(nn.Module):
         # One Synergy Expert
         synergy_output = expert_outputs[-2]
         synergy_anchor = synergy_output[0]
-        if len(synergy_output) <= 1:
-            synergy_loss = torch.zeros(
-                (), device=synergy_anchor.device, dtype=synergy_anchor.dtype
-            )
-        else:
-            synergy_negatives = torch.stack(synergy_output[1:])
-            synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
+        synergy_negatives = torch.stack(synergy_output[1:])
+        synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
 
         # One Redundacy Expert
         redundancy_output = expert_outputs[-1]
         redundancy_anchor = redundancy_output[0]
-        if len(redundancy_output) <= 1:
-            redundancy_loss = torch.zeros(
-                (), device=redundancy_anchor.device, dtype=redundancy_anchor.dtype
-            )
-        else:
-            redundancy_positives = torch.stack(redundancy_output[1:])
-            redundancy_loss = self.redundancy_loss(
-                redundancy_anchor, redundancy_positives
-            )
+        redundancy_positives = torch.stack(redundancy_output[1:])
+        redundancy_loss = self.redundancy_loss(redundancy_anchor, redundancy_positives)
 
         interaction_losses = uniqueness_losses + [synergy_loss] + [redundancy_loss]
 

@@ -102,11 +102,6 @@ class SimpleWeightedAverageIMoE(nn.Module):
             uniqueness_loss = 0
             outputs = expert_outputs[i]
             anchor = outputs[0]
-            if len(outputs) <= 1:
-                uniqueness_losses.append(
-                    torch.zeros((), device=anchor.device, dtype=anchor.dtype)
-                )
-                continue
             neg = outputs[i + 1]
             positives = outputs[1 : i + 1] + outputs[i + 2 :]
             for pos in positives:
@@ -116,26 +111,14 @@ class SimpleWeightedAverageIMoE(nn.Module):
         # One Synergy Expert
         synergy_output = expert_outputs[-2]
         synergy_anchor = synergy_output[0]
-        if len(synergy_output) <= 1:
-            synergy_loss = torch.zeros(
-                (), device=synergy_anchor.device, dtype=synergy_anchor.dtype
-            )
-        else:
-            synergy_negatives = torch.stack(synergy_output[1:])
-            synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
+        synergy_negatives = torch.stack(synergy_output[1:])
+        synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
 
         # One Redundacy Expert
         redundancy_output = expert_outputs[-1]
         redundancy_anchor = redundancy_output[0]
-        if len(redundancy_output) <= 1:
-            redundancy_loss = torch.zeros(
-                (), device=redundancy_anchor.device, dtype=redundancy_anchor.dtype
-            )
-        else:
-            redundancy_positives = torch.stack(redundancy_output[1:])
-            redundancy_loss = self.redundancy_loss(
-                redundancy_anchor, redundancy_positives
-            )
+        redundancy_positives = torch.stack(redundancy_output[1:])
+        redundancy_loss = self.redundancy_loss(redundancy_anchor, redundancy_positives)
 
         interaction_losses = uniqueness_losses + [synergy_loss] + [redundancy_loss]
 

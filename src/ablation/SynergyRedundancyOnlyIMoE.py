@@ -83,26 +83,14 @@ class SynergyRedundancyOnlyIMoE(nn.Module):
         # One Synergy Expert - No Change
         synergy_output = expert_outputs[-2]
         synergy_anchor = synergy_output[0]
-        if len(synergy_output) <= 1:
-            synergy_loss = torch.zeros(
-                (), device=synergy_anchor.device, dtype=synergy_anchor.dtype
-            )
-        else:
-            synergy_negatives = torch.stack(synergy_output[1:])
-            synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
+        synergy_negatives = torch.stack(synergy_output[1:])
+        synergy_loss = self.synergy_loss(synergy_anchor, synergy_negatives)
 
         # One Redundacy Expert - No Change
         redundancy_output = expert_outputs[-1]
         redundancy_anchor = redundancy_output[0]
-        if len(redundancy_output) <= 1:
-            redundancy_loss = torch.zeros(
-                (), device=redundancy_anchor.device, dtype=redundancy_anchor.dtype
-            )
-        else:
-            redundancy_positives = torch.stack(redundancy_output[1:])
-            redundancy_loss = self.redundancy_loss(
-                redundancy_anchor, redundancy_positives
-            )
+        redundancy_positives = torch.stack(redundancy_output[1:])
+        redundancy_loss = self.redundancy_loss(redundancy_anchor, redundancy_positives)
 
         interaction_losses = [synergy_loss] + [redundancy_loss]
 
