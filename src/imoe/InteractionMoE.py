@@ -28,7 +28,6 @@ class MLPReWeighting(nn.Module):
         hidden_dim_rw: hidden dimension of the re-weighting model.
         """
         super(MLPReWeighting, self).__init__()
-        self.hidden_dim = hidden_dim
         self.temperature = temperature
         self.mlp = MLP(
             hidden_dim * num_modalities,
@@ -39,26 +38,16 @@ class MLPReWeighting(nn.Module):
             dropout=0.5,
         )
 
-    def _resize_features(self, x):
-        current_dim = x.shape[1]
-        target_dim = self.hidden_dim
-        if current_dim == target_dim:
-            return x
-        if current_dim > target_dim:
-            return F.adaptive_avg_pool1d(x.unsqueeze(1), target_dim).squeeze(1)
-        pad_size = target_dim - current_dim
-        return F.pad(x, (0, pad_size))
-
     def temperature_scaled_softmax(self, logits):
         logits = logits / self.temperature
         return torch.softmax(logits, dim=1)
 
     def forward(self, inputs):
         if inputs[0].dim() == 3:
-            x = [self._resize_features(item.mean(dim=1)) for item in inputs]
+            x = [item.mean(dim=1) for item in inputs]
             x = torch.cat(x, dim=1)
         else:
-            x = torch.cat([self._resize_features(item) for item in inputs], dim=1)
+            x = torch.cat(inputs, dim=1)
         x = self.mlp(x)
         return self.temperature_scaled_softmax(x)
 
@@ -138,7 +127,8 @@ class InteractionExpert(nn.Module):
 
     def forward_multiple(self, inputs):
         """
-        Perform multiple forward passes for all modality replacements.
+        Perform a single forward pass for all modality replacements by stacking
+        inputs along the batch dimension.
 
         Args:
             inputs (list of tensors): List of modality inputs.
@@ -148,23 +138,21 @@ class InteractionExpert(nn.Module):
             replacement.
         """
         num_modalities = len(inputs)
-        outputs = []
-        gate_losses = []
+        variants = [inputs]
+        for replace_index in range(num_modalities):
+            random_vector = torch.randn_like(inputs[replace_index])
+            variant = (
+                inputs[:replace_index] + [random_vector] + inputs[replace_index + 1 :]
+            )
+            variants.append(variant)
 
-        for replace_index in [None] + list(range(num_modalities)):
-            if self.fusion_sparse:
-                output, gate_loss = self._forward_with_replacement(
-                    inputs, replace_index=replace_index
-                )
-                outputs.append(output)
-                gate_losses.append(gate_loss)
-            else:
-                outputs.append(
-                    self._forward_with_replacement(inputs, replace_index=replace_index)
-                )
+        stacked_inputs = self._stack_variant_inputs(variants)
+        output = self.fusion_model(stacked_inputs)
+        outputs = self._split_output(output, len(variants))
 
         if self.fusion_sparse:
-            return outputs, gate_losses
+            gate_loss = self.fusion_model.gate_loss()
+            return outputs, [gate_loss for _ in range(len(outputs))]
 
         return outputs
 
@@ -180,12 +168,10 @@ class InteractionMoE(nn.Module):
         hidden_dim_rw=256,
         num_layer_rw=2,
         temperature_rw=1,
-        include_synergy_redundancy=True,
     ):
         super(InteractionMoE, self).__init__()
-        num_branches = num_modalities + 2 if include_synergy_redundancy else num_modalities
+        num_branches = num_modalities + 1 + 1  # uni + syn + red
         self.num_modalities = num_modalities
-        self.include_synergy_redundancy = include_synergy_redundancy
         self.reweight = MLPReWeighting(
             num_modalities,
             num_branches,
@@ -280,25 +266,17 @@ class InteractionMoE(nn.Module):
                 for pos in positives:
                     uniqueness_loss += self.uniqueness_loss_single(anchor, pos, neg)
                 interaction_losses.append(uniqueness_loss / len(positives))
-            elif self.include_synergy_redundancy and expert_idx == self.num_modalities:
+            elif expert_idx == len(self.interaction_experts) - 2:
                 synergy_anchor = expert_output[0]
                 synergy_negatives = torch.stack(expert_output[1:])
                 interaction_losses.append(
                     self.synergy_loss(synergy_anchor, synergy_negatives)
                 )
-            elif self.include_synergy_redundancy and expert_idx == self.num_modalities + 1:
+            else:
                 redundancy_anchor = expert_output[0]
                 redundancy_positives = torch.stack(expert_output[1:])
                 interaction_losses.append(
                     self.redundancy_loss(redundancy_anchor, redundancy_positives)
-                )
-            else:
-                interaction_losses.append(
-                    torch.zeros(
-                        (),
-                        device=expert_output[0].device,
-                        dtype=expert_output[0].dtype,
-                    )
                 )
 
         all_logits = torch.stack(all_logits, dim=1)

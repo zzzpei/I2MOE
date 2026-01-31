@@ -55,8 +55,6 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
     device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
     print(device)
     num_modalities = len(args.modality)
-    use_amp = args.use_amp and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     if args.data == "adni":
         (
@@ -204,16 +202,14 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
         dataset=args.data,
     )
 
-    i2moe_hidden_dim = args.i2moe_hidden_dim or args.hidden_dim
     ensemble_model = InteractionMoE(
         num_modalities=num_modalities,
         fusion_model=deepcopy(fusion_model),
         fusion_sparse=args.fusion_sparse,
-        hidden_dim=i2moe_hidden_dim,
+        hidden_dim=args.hidden_dim,
         hidden_dim_rw=args.hidden_dim_rw,
         num_layer_rw=args.num_layer_rw,
         temperature_rw=args.temperature_rw,
-        include_synergy_redundancy=args.include_synergy_redundancy,
     ).to(device)
 
     if args.data == "mosi_regression":
@@ -221,11 +217,10 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
             num_modalities=num_modalities,
             fusion_model=deepcopy(fusion_model),
             fusion_sparse=args.fusion_sparse,
-            hidden_dim=i2moe_hidden_dim,
+            hidden_dim=args.hidden_dim,
             hidden_dim_rw=args.hidden_dim_rw,
             num_layer_rw=args.num_layer_rw,
             temperature_rw=args.temperature_rw,
-            include_synergy_redundancy=args.include_synergy_redundancy,
         ).to(device)
 
     params = list(ensemble_model.parameters()) + [
@@ -254,12 +249,11 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
     else:
         plotting_total_losses = {"task": [], "interaction": []}
 
-    plotting_interaction_losses = {
-        f"uni_{i+1}": [] for i in range(len(args.modality))
-    }
-    if args.include_synergy_redundancy:
-        plotting_interaction_losses["syn"] = []
-        plotting_interaction_losses["red"] = []
+    plotting_interaction_losses = {}
+    for i in range(len(args.modality)):
+        plotting_interaction_losses[f"uni_{i+1}"] = []
+    plotting_interaction_losses[f"syn"] = []
+    plotting_interaction_losses[f"red"] = []
 
     ############ efficiency
     train_time = 0
@@ -280,7 +274,7 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
             batch_gate_losses = []
         batch_interaction_losses = []
 
-        num_interaction_experts = len(ensemble_model.interaction_experts)
+        num_interaction_experts = len(args.modality) + 2
         interaction_loss_sums = [0] * (num_interaction_experts)
         minibatch_count = len(train_loader)
 
@@ -291,48 +285,40 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
             batch_labels = batch_labels.to(device, non_blocking=True)
             batch_mcs = batch_mcs.to(device, non_blocking=True)
             batch_observed = batch_observed.to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
-                fusion_input = []
-                for modality, samples in batch_samples.items():
-                    encoded_samples = encoder_dict[modality](samples)
-                    fusion_input.append(encoded_samples)
+            fusion_input = []
+            for i, (modality, samples) in enumerate(batch_samples.items()):
+                encoded_samples = encoder_dict[modality](samples)
+                fusion_input.append(encoded_samples)
 
-                if args.fusion_sparse:
-                    _, _, outputs, interaction_losses, gate_losses = ensemble_model(
-                        fusion_input, return_expert_outputs=False
-                    )
-                else:
-                    _, _, outputs, interaction_losses = ensemble_model(
-                        fusion_input, return_expert_outputs=False
-                    )
-
-                if args.data == "mosi_regression":
-                    task_loss = criterion(outputs, batch_labels.unsqueeze(1))
-                else:
-                    task_loss = criterion(outputs, batch_labels)
-
-                interaction_loss = sum(interaction_losses) / max(
-                    1, len(interaction_losses)
+            if args.fusion_sparse:
+                _, _, outputs, interaction_losses, gate_losses = ensemble_model(
+                    fusion_input, return_expert_outputs=False
                 )
-                if args.fusion_sparse:
-                    gate_loss = torch.stack(gate_losses).mean()
-                    loss = (
-                        task_loss
-                        + args.interaction_loss_weight * interaction_loss
-                        + args.gate_loss_weight * gate_loss
-                    )
-                else:
-                    loss = task_loss + args.interaction_loss_weight * interaction_loss
-
-            if use_amp:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
             else:
-                loss.backward()
-                optimizer.step()
+                _, _, outputs, interaction_losses = ensemble_model(
+                    fusion_input, return_expert_outputs=False
+                )
+
+            if args.data == "mosi_regression":
+                task_loss = criterion(outputs, batch_labels.unsqueeze(1))
+            else:
+                task_loss = criterion(outputs, batch_labels)
+
+            interaction_loss = sum(interaction_losses) / (len(args.modality) + 2)
+            if args.fusion_sparse:
+                gate_loss = torch.stack(gate_losses).mean()
+                loss = (
+                    task_loss
+                    + args.interaction_loss_weight * interaction_loss
+                    + args.gate_loss_weight * gate_loss
+                )
+            else:
+                loss = task_loss + args.interaction_loss_weight * interaction_loss
+
+            loss.backward()
+            optimizer.step()
 
             batch_task_losses.append(task_loss.item())
             batch_interaction_losses.append(interaction_loss.item())
@@ -360,13 +346,13 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
             avg_loss = interaction_loss_sums[i] / minibatch_count
             plotting_interaction_losses[f"uni_{i+1}"].append(avg_loss)
 
-        if args.include_synergy_redundancy:
-            plotting_interaction_losses["syn"].append(
-                interaction_loss_sums[num_modalities] / minibatch_count
-            )
-            plotting_interaction_losses["red"].append(
-                interaction_loss_sums[num_modalities + 1] / minibatch_count
-            )
+        # For syn and red interaction losses
+        plotting_interaction_losses["syn"].append(
+            interaction_loss_sums[-2] / minibatch_count
+        )
+        plotting_interaction_losses["red"].append(
+            interaction_loss_sums[-1] / minibatch_count
+        )
 
         ensemble_model.eval()
         for encoder in encoder_dict.values():
@@ -377,7 +363,7 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
         all_probs = []
         val_losses = []
 
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.no_grad():
             for batch_samples, batch_labels, batch_mcs, batch_observed in val_loader:
                 batch_samples = {
                     k: v.to(device, non_blocking=True) for k, v in batch_samples.items()
@@ -385,6 +371,7 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
                 batch_labels = batch_labels.to(device, non_blocking=True)
                 batch_mcs = batch_mcs.to(device, non_blocking=True)
                 batch_observed = batch_observed.to(device, non_blocking=True)
+                optimizer.zero_grad()
 
                 fusion_input = []
                 for i, (modality, samples) in enumerate(batch_samples.items()):
@@ -574,14 +561,14 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
     all_probs = []
     test_losses = []
     all_routing_weights = []
-    num_experts = len(ensemble_model.interaction_experts)
+    num_experts = len(args.modality) + 2
     all_expert_outputs = [[] for _ in range(num_experts)]
 
     ############ efficiency
     infer_time = 0
     ############ efficiency
 
-    with torch.no_grad(), torch.cuda.amp.autocast(enabled=use_amp):
+    with torch.no_grad():
         ############ efficiency
         epoch_start_time = time.time()
         ############ efficiency
@@ -599,6 +586,7 @@ def train_and_evaluate_imoe(args, seed, fusion_model, fusion):
             batch_labels = batch_labels.to(device, non_blocking=True)
             batch_mcs = batch_mcs.to(device, non_blocking=True)
             batch_observed = batch_observed.to(device, non_blocking=True)
+            optimizer.zero_grad()
 
             fusion_input = []
             for i, (modality, samples) in enumerate(batch_samples.items()):
